@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
+import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -329,13 +332,9 @@ class Batman:
     """Backup Application."""
 
     def __init__(self) -> None:
-        user = os.getlogin()
-        if user == "root":
-            self.log("batman should not be run as root!")
-            self.exit(1)
+        user: str = self.check_user()
 
         self.duplicity = Command("duplicity", user)
-        self.duplicity("test")
 
         config = Config()
         passphrase = config.read("batman/passphrase")
@@ -353,6 +352,56 @@ class Batman:
             args.func(args)
         else:
             parser.print_help()
+
+    def check_user(self) -> str:
+        # print(
+        #     f"login: {os.getlogin()}, user: {getpass.getuser()}, uidd: {os.getuid()}, home: {Path.home()}"
+        # )
+        if os.getlogin() == "root":
+            if os.getuid() != 0:
+                return self.get_username(os.getuid())
+            self.log("You are in a root session (maybe in a system rescue boot mode).")
+            self.fork()
+        elif getpass.getuser() == "root" or os.getuid() == 0:
+            self.log("batman should not be run as root! aborting...")
+            self.exit(1)
+        return os.getlogin()
+
+    def fork(self):
+        users = self.get_users()
+        if len(users) > 0:
+            choices = ", ".join([f"as {u}[{i}]" for i, u in enumerate(users)])
+            valid = (str(i) for i in range(len(users)))
+            out = input(f"Choose if you want to login {choices} or aborting[any key]: ")
+            if out in valid:
+                user = users[int(out)]
+                self.exit(os.system(f"sudo -u {user} python3 {__file__}"))  # noqa: S605
+            else:
+                self.log("Aborting...")
+                self.exit(0)
+        else:
+            self.log("No valid login user were found on this system, exiting...")
+            self.exit(1)
+
+    def get_username(self, uid: int) -> str:
+        return pwd.getpwuid(uid).pw_name
+
+    def get_users(self) -> list[str]:
+        with Path("/etc/login.defs").open("r") as lgn:
+            if sch := re.search(r"^UID_MIN\s+(\d+)", lgn.read()):
+                min_uid = int(sch[1])
+            else:
+                min_uid = 1000
+
+        return [
+            p.pw_name
+            for p in pwd.getpwall()
+            if (
+                p.pw_uid >= min_uid
+                and p.pw_shell not in ("/usr/sbin/nologin", "/bin/false")
+                and p.pw_dir.startswith("/home")
+            )
+        ]
 
     def exit(self, code: int = 0) -> None:
         sys.exit(code)
