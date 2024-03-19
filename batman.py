@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from functools import partial, partialmethod
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -74,19 +74,27 @@ class Command:
     """Command class."""
 
     class Error(Exception):
-        def __init__(self, msg: str) -> None:
+        def __init__(self, msg: str, retcode: int = 0, cmd: list[str] | None = None) -> None:
+            if retcode and cmd:
+                _cmd = " ".join(cmd)
+                msg = f"command <{_cmd}> returned non-zero exit status {retcode}.\n{msg}"
+                self.returncode = retcode
             self.msg = msg
             super().__init__(msg)
 
     def __init__(self, name: str, user: str, path: os.PathLike | None = None) -> None:
-        if not path:
+        if path is None:
             self.command = shutil.which(name)
         else:
             _path = Path(path)
             self.command = path if _path.is_file() else None
         if self.command is None:
-            raise RuntimeError(f"Command {name} not found on your system.")
+            raise Command.Error(f"Command {path or name} not found on your system.")
         self.user: str = user
+        self.name: str = name
+
+    def _create_exception(self) -> type:
+        return type(f"{self.name.capitalize()}Error", (Command.Error,), {})
 
     def _run(self, *args: str, user: str, capture: bool = True, **kwargs) -> str:
         """Run the command and return stdout."""
@@ -103,17 +111,18 @@ class Command:
             _args,
             capture_output=capture,
             shell=False,  # noqa: S603
-            encoding="UTF-8",
             check=False,
+            encoding="UTF-8",
             text=True,
             **kwargs,
         )
         if cp.returncode:
-            raise Command.Error(cp.stderr)
+            raise self._create_exception()(cp.stderr, cp.returncode, _args)
         return cp.stdout or ""
 
-    def __call__(self, *args: str, capture: bool = True, **kwargs) -> str:
-        return self._run(*args, user=self.user, capture=capture, **kwargs)
+    def __call__(self, *args: str, user: str | None = None, capture: bool = True, **kwargs) -> str:
+        _user = user or self.user
+        return self._run(*args, user=_user, capture=capture, **kwargs)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -326,6 +335,7 @@ class Batman:
             self.exit(1)
 
         self.duplicity = Command("duplicity", user)
+        self.duplicity("test")
 
         config = Config()
         passphrase = config.read("batman/passphrase")
