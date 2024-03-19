@@ -182,8 +182,7 @@ class Job:
         ]
 
         if self.exclude:
-            for filepath in self.exclude:
-                opts.append(f"--exclude={filepath}")
+            opts.extend(f"--exclude={filepath}" for filepath in self.exclude)
         if self.exclude_ofs:
             opts.append("--exclude-other-filesystems")
         if self.full_delay:
@@ -193,8 +192,7 @@ class Job:
         if progress:
             opts.append("--progress")
 
-        opts.append(str(self.root))
-        opts.append(self.repository)
+        opts.extend((str(self.root), self.repository))
         return opts
 
     def cleanup_args(self, dryrun: bool = False) -> list[str]:
@@ -211,8 +209,8 @@ class Job:
         # TODO: collection-status [--file-changed <relpath>] [--show-changes-in-set <index>]
         return [
             "collection-status",
-            "--archive-dir=%s" % ARCHIVE_DIRECTORY,
-            "--name=%s" % self.name,
+            f"--archive-dir={ARCHIVE_DIRECTORY}",
+            f"--name={self.name}",
             self.repository,
         ]
 
@@ -257,9 +255,7 @@ class Pool:
             )
 
     def info(self) -> tuple[str, ...]:
-        out = []
-        for vol in self.volumes.values():
-            out.append(vol.info())
+        out = [vol.info() for vol in self.volumes.values()]
         return tuple(out)
 
     def get(self, name: str) -> Volume:
@@ -337,8 +333,7 @@ class Batman:
         self.duplicity = Command("duplicity", user)
 
         config = Config()
-        passphrase = config.read("batman/passphrase")
-        if passphrase:
+        if passphrase := config.read("batman/passphrase"):
             os.putenv("PASSPHRASE", passphrase)
 
         self.pool = Pool(config.read("volumes"))
@@ -355,7 +350,8 @@ class Batman:
 
     def check_user(self) -> str:
         # print(
-        #     f"login: {os.getlogin()}, user: {getpass.getuser()}, uidd: {os.getuid()}, home: {Path.home()}"
+        #     f"login: {os.getlogin()}, user: {getpass.getuser()},
+        #               uidd: {os.getuid()}, home: {Path.home()}"
         # )
         if os.getlogin() == "root":
             if os.getuid() != 0:
@@ -489,6 +485,7 @@ class Batman:
         )
 
     def restore(self, args: argparse.Namespace) -> None:
+        # sourcery skip: class-extract-method
         jobs = self.jobs_from_args(args)
         if len(jobs) != 1:
             self.log("You should specify only one Job for restoring a file.")
