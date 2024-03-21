@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 
-exec python3 batman.py $@
+cd $(dirname $(realpath $0))
+python3 batman.py $@
