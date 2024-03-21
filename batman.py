@@ -11,9 +11,11 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum, unique
 from functools import partial
 from pathlib import Path
 from typing import Any
+from warnings import warn
 
 import tomli
 
@@ -128,27 +130,82 @@ class Command:
         return self._run(*args, user=_user, capture=capture, **kwargs)
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
+@unique
+class Backend(StrEnum):
+    FILE = "file"
+    FTP = "ftp"
+    SFTP = "sftp"
+    SCP = "scp"
+    FISH = "fish"
+
+
+@dataclass(slots=True, kw_only=True, unsafe_hash=True)
 class Volume:
     """A duplicity volume where backup will be stored."""
 
-    kind: str
-    url: str
+    scheme: Backend
+    host: str
+    path: str
+    port: int | None = None
+    user: str | None = None
+    password: str | None = None
+    url: str = field(init=False, compare=False)
+
+    def __post_init__(self):
+        if self.scheme != Backend.FILE:
+            psw = f":{self.password}" if self.password else ""
+            user = f"{self.user}{psw}@" if self.user else ""
+            port = f":{self.port}" if self.port else ""
+        else:
+            port = user = ""
+            self.verify_file_host()
+
+        self.url = f"{self.scheme}://{user}{self.host}{port}/{self.path}"
+
+    def verify_file_host(self):
+        if "/" in self.host:  # file system path
+            path = Path(self.host).expanduser().absolute()
+            if not path.exists():
+                raise OSError(f"{self.host} should be an available mount point")
+            if not path.is_mount():
+                raise ValueError(f"{self.host} should be a mount point")
+            if path.is_relative_to("/media"):
+                warn(
+                    f"{self.host} is defined as an automated mount point. "
+                    "It will not be available with this path in a "
+                    "recovery session (logged as root).",
+                    stacklevel=1,
+                )
+        else:  # disk label or uuid
+            for test_pth in (Path("/dev/disk/by-label"), Path("/dev/disk/by-uuid")):
+                if (test_pth / self.host).exists():
+                    dev = (test_pth / self.host).resolve()
+                    break
+            else:
+                raise ValueError(f"Unable to resolve {self.host} to a valid disk device")
+            self.host = self.get_mount_point(dev)
+
+    def get_mount_point(self, device: Path) -> str:
+        df = Command("df", getpass.getuser())  # FIXME: write a Session Class
+        for dev in df("-l", "--output=source,target").split(os.linesep)[1:]:
+            if dev.startswith(str(device)):
+                return dev.split()[1].strip()
+        raise ValueError(f"{device} is not mounted")  # TODO: ..so mount it somewhere
 
     def is_available(self) -> bool:
-        return os.path.ismount(self.url)
+        return os.path.ismount(self.host)
 
     def info(self) -> str:
         if self.is_available():
-            stat = shutil.disk_usage(self.url)
+            stat = shutil.disk_usage(self.host)
             return (
-                f"\nvolume {self.url} is mounted"
+                f"volume {self.host} is mounted\n"
                 f"disk usage : {format_bytes(stat.used)}/{format_bytes(stat.total)}, "
-                f"free={format_bytes(stat.free)})"
+                f"free={format_bytes(stat.free)})\n"
                 "------------------------------------------------------------\n"
             )
         return (
-            f"\nBe aware that volume {self.url} is not mounted\n"
+            f"\nBe aware that volume {self.host} is not mounted\n"
             "------------------------------------------------------------\n"
         )
 
@@ -168,17 +225,20 @@ class Job:
     repository: str = field(init=False, compare=False)
 
     def __post_init__(self) -> None:
-        self.repository = f"{self.volume.kind}://{self.volume.url}/{self.name.upper()}"
+        self.repository = f"{self.volume.url}/{self.name.upper()}"
 
     def backup_args(
-        self, dryrun: bool = False, full: bool = False, progress: bool = False
+        self,
+        dryrun: bool = False,
+        full: bool = False,
+        progress: bool = False,
     ) -> list[str]:
         opts = [
             "full" if full else "incremental",
             f"--archive-dir={ARCHIVE_DIRECTORY}",
             f"--name={self.name}",
             f"--tempdir={TMP}",
-            f"--log-file={self.volume.kind}://{self.volume.url}/duplicity-{self.name.upper()}.log",
+            f"--log-file={self.volume.scheme}://{self.volume.host}/duplicity-{self.name.upper()}.log",
         ]
 
         if self.exclude:
@@ -250,8 +310,12 @@ class Pool:
         self.volumes: dict[str, Volume] = {}
         for name, vol_def in mapping.items():
             self.volumes[name] = Volume(
-                kind=vol_def["type"],
-                url=vol_def["url"],
+                scheme=vol_def["scheme"],
+                host=vol_def["host"],
+                path=vol_def["path"],
+                port=vol_def.get("port"),
+                user=vol_def.get("user"),
+                password=vol_def.get("password"),
             )
 
     def info(self) -> tuple[str, ...]:
@@ -363,26 +427,29 @@ class Batman:
             self.exit(1)
         return os.getlogin()
 
-    def fork(self):
-        users = self.get_users()
+    @staticmethod
+    def fork():
+        users = Batman.get_real_users()
         if len(users) > 0:
             choices = ", ".join([f"as {u}[{i}]" for i, u in enumerate(users)])
             valid = (str(i) for i in range(len(users)))
             out = input(f"Choose if you want to login {choices} or aborting[any key]: ")
             if out in valid:
                 user = users[int(out)]
-                self.exit(os.system(f"sudo -u {user} python3 {__file__}"))  # noqa: S605
+                Batman.exit(os.system(f"sudo -u {user} python3 {__file__}"))  # noqa: S605
             else:
-                self.log("Aborting...")
-                self.exit(0)
+                Batman.log("Aborting...")
+                Batman.exit(0)
         else:
-            self.log("No valid login user were found on this system, exiting...")
-            self.exit(1)
+            Batman.log("No valid login user were found on this system, exiting...")
+            Batman.exit(1)
 
-    def get_username(self, uid: int) -> str:
+    @staticmethod
+    def get_username(uid: int) -> str:
         return pwd.getpwuid(uid).pw_name
 
-    def get_users(self) -> list[str]:
+    @staticmethod
+    def get_real_users() -> list[str]:
         with Path("/etc/login.defs").open("r") as lgn:
             if sch := re.search(r"^UID_MIN\s+(\d+)", lgn.read()):
                 min_uid = int(sch[1])
@@ -399,10 +466,12 @@ class Batman:
             )
         ]
 
-    def exit(self, code: int = 0) -> None:
+    @staticmethod
+    def exit(code: int = 0) -> None:
         sys.exit(code)
 
-    def log(self, *args: Any) -> None:
+    @staticmethod
+    def log(*args: Any) -> None:
         for st in args:
             if st:
                 print(st)
@@ -416,7 +485,7 @@ class Batman:
 
     def ensure_volume(self, job: Job) -> None:
         if not job.volume.is_available():
-            self.log(f"Please, attach backup volume {job.volume.url}, exiting...\n")
+            self.log(f"Please, attach backup volume {job.volume.host}, exiting...\n")
             self.exit(1)
 
     def handle_task(
@@ -457,8 +526,9 @@ class Batman:
             if not repo.is_dir():
                 repo.mkdir()
 
-            if job.prehook:
-                pass
+            # TODO: call prehook
+            # if job.prehook:
+            #     pass
 
             self.handle_task(
                 task=self.duplicity,
