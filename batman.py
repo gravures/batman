@@ -192,6 +192,9 @@ class Volume:
                 return dev.split()[1].strip()
         raise ValueError(f"{device} is not mounted")  # TODO: ..so mount it somewhere
 
+    def url_as_path(self) -> str:
+        return f"{self.host}/{self.path}" if self.scheme == Backend.FILE else self.url
+
     def is_available(self) -> bool:
         return os.path.ismount(self.host)
 
@@ -238,7 +241,7 @@ class Job:
             f"--archive-dir={ARCHIVE_DIRECTORY}",
             f"--name={self.name}",
             f"--tempdir={TMP}",
-            f"--log-file={self.volume.scheme}://{self.volume.host}/duplicity-{self.name.upper()}.log",
+            f"--log-file={self.volume.url_as_path()}/duplicity-{self.name.upper()}.log",
         ]
 
         if self.exclude:
@@ -522,9 +525,10 @@ class Batman:
         for job in self.jobs_from_args(args):
             self.ensure_volume(job)
 
-            repo = Path(job.repository)
-            if not repo.is_dir():
-                repo.mkdir()
+            # FIXME: does not work anymore
+            # repo = Path(job.repository)
+            # if not repo.is_dir():
+            #     repo.mkdir()
 
             # TODO: call prehook
             # if job.prehook:
