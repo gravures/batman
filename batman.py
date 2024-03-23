@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from warnings import warn
 
-import tomli
+import tomli  # type: ignore
 
 
 ARCHIVE_DIRECTORY = "/archive/duplicity"
@@ -285,10 +285,10 @@ class Job:
             f"--archive-dir={ARCHIVE_DIRECTORY}",
             f"--name={self.name}",
             f"--tempdir={TMP}",
-            f"--log-file={self.repository}/duplicity-{self.name.upper()}.log",
+            f"--log-file={self.volume.url_as_path()}/duplicity-{self.name.upper()}.log",
+            "--no-restore-ownership",
+            f"--path-to-restore={file}",
             "restore",
-            f"--file-to-restore={file}",
-            "--do-not-restore-ownership",
             self.repository,
             str(restore),
         ]
@@ -597,7 +597,7 @@ class Batman:
             err=f"<{job.name}> file(s) restoration failed for {abs_file}",
             success=(
                 f"<{job.name}> file(s) '{abs_file}' restoration sucessfull, "
-                "look into '{RESTORE_DIR}' folder"
+                f"look into '{RESTORE_DIR}' folder"
             ),
         )
         self.exit()

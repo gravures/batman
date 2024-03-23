@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
 cd $(dirname $(realpath $0))
-python3 batman.py $@
+micromamba run -p ./.env python batman.py $@

@@ -1,0 +1,7 @@
+chardet<3.10
+cryptography==3.4.8
+requests
+urllib3<1.26
+fasteners
+duplicity
+tomli

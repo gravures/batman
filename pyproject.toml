@@ -1,0 +1,51 @@
+[project]
+name = "batman"
+dependencies = [
+  "chardet<3.10",
+  "cryptography==3.4.8",
+  "requests",
+  "urllib3<1.26",
+  "fasteners",
+  "duplicity",
+  "tomli",
+]
+
+[project.optional-dependencies]
+backends = [
+  "atom",
+  "azure-storage-blob",
+  "b2sdk",
+  "boto3",
+  "botocore",
+  "boxsdk[jwt]",
+  "dropbox",
+  "gdata-python3",
+  "google-api-python-client",
+  "google-auth-oauthlib",
+  "httplib2",
+  "jottalib",
+  "keyring",
+  "lxml",
+  "mediafire",
+  "megatools",
+  "paramiko",
+  "pexpect",
+  "psutil",
+  "pydrive2",
+  "pyrax",
+  "python-swiftclient",
+  "python-keystoneclient",
+  "requests-oauthlib",
+]
+
+[tool.conda-lock]
+default-non-conda-source = "pip"
+skip-non-conda-lock      = true
+channels                 = ['conda-forge']
+platforms                = ['linux-64']
+
+[tool.conda-lock.dependencies]
+python   = "3.11"
+pip      = ">=24"
+librsync = ">=2.3"
+gnupg    = ">=2.4.5"
