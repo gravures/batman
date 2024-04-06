@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from warnings import warn
 
-import tomli  # type: ignore
+import tomli
 
 
 ARCHIVE_DIRECTORY = "/archive/duplicity"
@@ -224,7 +224,7 @@ class Job:
     exclude_ofs: bool
     full_delay: str
     prehook: os.PathLike | None
-    remove_old: int
+    keep_last_full: int
     repository: str = field(init=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -265,8 +265,8 @@ class Job:
         opts.append(self.repository)
         return opts
 
-    def remove_old_args(self, num: int) -> list[str]:
-        return ["remove-all-but-n-full", f"{num}", "--force", self.repository]
+    def remove_old_args(self) -> list[str]:
+        return ["remove-all-but-n-full", f"{self.keep_last_full}", "--force", self.repository]
 
     def status_arsg(self) -> list[str]:
         # TODO: collection-status [--file-changed <relpath>] [--show-changes-in-set <index>]
@@ -299,8 +299,8 @@ class Job:
             r += "\nexclude files : [%s]" % (", ".join(self.exclude))
         if self.prehook:
             r += "\njob with prehook"
-        if self.remove_old:
-            r += "\nremove old backup > %i" % self.remove_old
+        if self.keep_last_full:
+            r += "\nremove old backup > %i" % self.keep_last_full
         return r
 
 
@@ -347,7 +347,7 @@ class Queue:
                         exclude=tuple(job_def.get("exclude", [])),
                         exclude_ofs=job_def.get("exclude_ofs", False),
                         full_delay=job_def.get("full_delay", ""),
-                        remove_old=job_def.get("remove_old", 1),
+                        keep_last_full=job_def.get("keep_last_full", 0),
                         prehook=None,
                     )
                 )
@@ -500,6 +500,7 @@ class Batman:
         err: str,
         dryrun: bool = False,
         cleanup: partial[None] | None = None,
+        **kwargs: Any,
     ) -> None:
         self.log("\n")
         self.log(desc)
@@ -507,7 +508,7 @@ class Batman:
             self.log("running in dry-run mode")
         try:
             start = time.time()
-            out = task(*opts)
+            out = task(*opts, **kwargs)
         except Command.Error as e:
             self.log("********************************")
             self.log(err)
@@ -542,21 +543,23 @@ class Batman:
                 success=f"<{job.name}> backup sucessfull for {job.root}",
                 dryrun=args.dryrun,
                 cleanup=partial(self._cleanup, job, args.dryrun),
+                capture=False,
             )
 
-            if job.remove_old and not args.dryrun:
-                self.remove_old(job, num=job.remove_old)
+            if not args.dryrun:
+                self.remove_old(job)
         self.exit()
 
-    def remove_old(self, job: Job, num: int = 1) -> None:
-        self.handle_task(
-            task=self.duplicity,
-            opts=job.remove_old_args(num),
-            desc=f"Removing old backup for {job.name.upper()} : {job.root}",
-            success=f"Sucessfully removed old backup <{job.name}> for {job.root}",
-            err=f"Removing old backup <{job.name}> failed for {job.root}",
-            dryrun=False,
-        )
+    def remove_old(self, job: Job) -> None:
+        if job.keep_last_full:
+            self.handle_task(
+                task=self.duplicity,
+                opts=job.remove_old_args(),
+                desc=f"Removing old backup for {job.name.upper()} : {job.root}",
+                success=f"Sucessfully removed old backup <{job.name}> for {job.root}",
+                err=f"Removing old backup <{job.name}> failed for {job.root}",
+                dryrun=False,
+            )
 
     def restore(self, args: argparse.Namespace) -> None:
         # sourcery skip: class-extract-method
@@ -655,6 +658,11 @@ class Batman:
             )
         self.exit()
 
+    def _duplicity(self, args: argparse.Namespace) -> None:
+        print("Calling duplicity with args:", args.args)
+        self.duplicity(*args.args, capture=False)
+        self.exit()
+
     def parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
             prog="batman",
@@ -749,9 +757,24 @@ class Batman:
             action="store",
             nargs="?",
         )
-        restore.set_defaults(
-            func=self.restore, parents=[jobs_parser], help=_help, description=_help
+        restore.set_defaults(func=self.restore)
+
+        # duplicity command
+        _help = "run duplicity directly"
+        duplicity = commands.add_parser(
+            "duplicity",
+            help=_help,
+            description=_help,
+            prefix_chars="#",
         )
+        duplicity.add_argument(
+            "args",
+            help="duplicity positional arguments",
+            nargs="*",
+            default=["--help"],
+            action="store",
+        )
+        duplicity.set_defaults(func=self._duplicity)
 
         return parser
 
