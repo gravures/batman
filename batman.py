@@ -33,7 +33,6 @@ from session import Session
 from system import Command, format_bytes, get_mount_point
 
 
-ARCHIVE_DIRECTORY = "/archive/duplicity"
 TMP = "/var/tmp"  # noqa: S108
 RESTORE_DIR = "RESTORED"
 
@@ -151,7 +150,10 @@ class Volume:
                 stat = shutil.disk_usage(self.url_as_path())
                 info.extend((
                     f"volume host {self.host} is mounted",
-                    f"disk usage : {format_bytes(stat.used)}/{format_bytes(stat.total)}, free={format_bytes(stat.free)})",
+                    (
+                        f"disk usage : {format_bytes(stat.used)}/{format_bytes(stat.total)},"
+                        f"free={format_bytes(stat.free)})"
+                    ),
                 ))
         info.append("------------------------------------------------------------")
         return "\n".join(info)
@@ -176,18 +178,20 @@ class Job:
 
     def backup_args(
         self,
+        archive: str | None,
         dryrun: bool = False,
         full: bool = False,
         progress: bool = False,
     ) -> list[str]:
         opts = [
             "full" if full else "incremental",
-            f"--archive-dir={ARCHIVE_DIRECTORY}",
             f"--name={self.name}",
             f"--tempdir={TMP}",
             f"--log-file={self.volume.url_as_path()}/duplicity-{self.name.upper()}.log",
         ]
 
+        if archive:
+            opts.append(f"--archive-dir={archive}")
         if self.exclude:
             opts.extend(f"--exclude={filepath}" for filepath in self.exclude)
         if self.exclude_ofs:
@@ -212,11 +216,12 @@ class Job:
     def remove_old_args(self) -> list[str]:
         return ["remove-all-but-n-full", f"{self.keep_last_full}", "--force", self.repository]
 
-    def status_arsg(self) -> list[str]:
+    def status_args(self, archive: str | None) -> list[str]:
         # TODO: collection-status [--file-changed <relpath>] [--show-changes-in-set <index>]
+        archive = f"--archive-dir={archive}" if archive else ""
         return [
             "collection-status",
-            f"--archive-dir={ARCHIVE_DIRECTORY}",
+            archive,
             f"--name={self.name}",
             self.repository,
         ]
@@ -224,9 +229,10 @@ class Job:
     def list_files_args(self) -> list[str]:
         return ["duplicity", "list-current-files", self.repository]
 
-    def restore_args(self, file: Path, restore: Path) -> list[str]:
+    def restore_args(self, file: Path, restore: Path, archive: str | None) -> list[str]:
+        archive = f"--archive-dir={archive}" if archive else ""
         return [
-            f"--archive-dir={ARCHIVE_DIRECTORY}",
+            archive,
             f"--name={self.name}",
             f"--tempdir={TMP}",
             f"--log-file={self.volume.url_as_path()}/duplicity-{self.name.upper()}.log",
@@ -341,10 +347,13 @@ class Batman:
     def __init__(self, session: Session) -> None:
         self.session: Session = session
         self.duplicity = Command("duplicity", self.session.user)
+        self.duplicity_env: dict[str, str] = os.environ.copy()
 
         config = Config()
-        if passphrase := config.read("batman/passphrase"):
-            os.putenv("PASSPHRASE", passphrase)
+        self.duplicity_archive_dir: str | None = config.read("batman/archive")
+
+        if env := config.read("batman/env"):
+            self.duplicity_env |= env
 
         self.pool = Pool(config.read("volumes"))
         self.session.log(*self.pool.info())
@@ -386,13 +395,19 @@ class Batman:
 
             self.session.handle_task(
                 task=self.duplicity,
-                opts=job.backup_args(dryrun=args.dryrun, full=args.full, progress=args.progress),
+                opts=job.backup_args(
+                    dryrun=args.dryrun,
+                    full=args.full,
+                    progress=args.progress,
+                    archive=self.duplicity_archive_dir,
+                ),
                 desc=f"Starting <{job.name}> backup: {job.root}",
                 err=f"<{job.name}> backup failed for {job.root}",
                 success=f"<{job.name}> backup sucessfull for {job.root}",
                 dryrun=args.dryrun,
                 cleanup=partial(self._cleanup, job, args.dryrun),
                 capture=False,
+                env=self.duplicity_env,
             )
 
             if not args.dryrun:
@@ -408,6 +423,7 @@ class Batman:
                 success=f"Sucessfully removed old backup <{job.name}> for {job.root}",
                 err=f"Removing old backup <{job.name}> failed for {job.root}",
                 dryrun=False,
+                env=self.duplicity_env,
             )
 
     def restore(self, args: argparse.Namespace) -> None:
@@ -446,13 +462,14 @@ class Batman:
 
         self.session.handle_task(
             task=self.duplicity,
-            opts=job.restore_args(file, restore),
+            opts=job.restore_args(file, restore, archive=self.duplicity_archive_dir),
             desc=f"trying to restore '{abs_file}' from job <{job.name}>...",
             err=f"<{job.name}> file(s) restoration failed for {abs_file}",
             success=(
                 f"<{job.name}> file(s) '{abs_file}' restoration sucessfull, "
                 f"look into '{RESTORE_DIR}' folder"
             ),
+            env=self.duplicity_env,
         )
         self.session.exit()
 
@@ -470,6 +487,7 @@ class Batman:
             err=f"Cleaning <{job.name}> backup failed for {job.root}",
             success=f"<{job.name}> cleaned sucessfully for {job.root}",
             dryrun=dryrun,
+            env=self.duplicity_env,
         )
 
     def list_jobs(self, args: argparse.Namespace) -> None:
@@ -502,7 +520,7 @@ class Batman:
         for job in self.jobs_from_args(args):
             self.session.handle_task(
                 task=self.duplicity,
-                opts=job.status_arsg(),
+                opts=job.status_args(archive=self.duplicity_archive_dir),
                 desc=f"Collection status for {job.name.upper()} : \nroot : {job.root}",
                 err="",
                 success="",
@@ -513,6 +531,9 @@ class Batman:
         print("Calling duplicity with args:", args.args)
         self.duplicity(*args.args, capture=False)
         self.session.exit()
+
+    def show_man(self, args: argparse.Namespace) -> None:
+        os.system("man duplicity")  # noqa: S605, S607
 
     def parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
@@ -626,6 +647,11 @@ class Batman:
             action="store",
         )
         duplicity.set_defaults(func=self._duplicity)
+
+        # man commamnd
+        _help = "show duplicity man page"
+        man = commands.add_parser("man", help=_help, description=_help)
+        man.set_defaults(func=self.show_man)
 
         return parser
 
