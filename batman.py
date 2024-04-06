@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
+# Copyright (c) 2024 - Gilles Coissac
+# This file is part of Batman program.
+#
+# Lyndows is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published
+# by the Free Software Foundation, either version 3 of the License,
+# or (at your option) any later version.
+#
+# Lyndows is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty
+# of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Lyndows. If not, see <https://www.gnu.org/licenses/>
 from __future__ import annotations
 
 import argparse
-import getpass
 import os
-import pwd
-import re
 import shutil
-import subprocess
 import sys
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum, unique
 from functools import partial
 from pathlib import Path
@@ -19,115 +29,13 @@ from warnings import warn
 
 import tomli
 
+from session import Session
+from system import Command, format_bytes, get_mount_point
+
 
 ARCHIVE_DIRECTORY = "/archive/duplicity"
 TMP = "/var/tmp"  # noqa: S108
 RESTORE_DIR = "RESTORED"
-
-
-def bootstrap():
-    sudo_user()
-
-
-def sudo_user():
-    if not shutil.which("sudo"):
-        os.system("su -c apt-get install sudo")  # noqa: S605, S607
-    user = os.getlogin()
-    os.system(f"su -c /sbin/usermod -aG sudo {user}")  # noqa: S605
-
-
-def format_bytes(
-    nbytes: int, unit: str | None = None, suffix: str = "b", space: bool = True
-) -> str:
-    """Format bytes size.
-
-    Scale bytes to its proper byte format.
-    e.g: 1253656678 => '1.17GB'
-
-    Args:
-        nbytes (int): bytes size to format.
-        unit (str | None): unit to convert bytes,
-        if None unit will be search for best fit.
-        suffix (str): Letter added just after the
-        main unit letter (Mb, Kb, etc).Defaults to "b".
-        space (bool): add space before the unit letter.
-        Defaults to True.
-
-    Returns:
-        str: formated string.
-    """
-    units = ["B", "K", "M", "G", "T", "P", "E", "Z"]
-    factor = 1024
-    space = " " if space else ""  # type: ignore
-
-    if unit:
-        if unit not in units:
-            raise ValueError(f"unit {unit} shold be one of {units}")
-        res = nbytes if unit == "B" else nbytes / factor ** (units.index(unit))
-        return f"{res:.2f}{space}{unit}{suffix}"
-
-    units[0] = ""
-    for unit in units:
-        if nbytes < factor:
-            return f"{nbytes:.2f}{space}{unit}{suffix}"
-        nbytes /= factor  # type: ignore
-
-    return f"{nbytes:.2f}{space}Y{suffix}"
-
-
-class Command:
-    """Command class."""
-
-    class Error(Exception):
-        def __init__(self, msg: str, retcode: int = 0, cmd: list[str] | None = None) -> None:
-            if retcode and cmd:
-                _cmd = " ".join(cmd)
-                msg = f"command <{_cmd}> returned non-zero exit status {retcode}.\n{msg}"
-                self.returncode = retcode
-            self.msg = msg
-            super().__init__(msg)
-
-    def __init__(self, name: str, user: str, path: os.PathLike | None = None) -> None:
-        if path is None:
-            self.command = shutil.which(name)
-        else:
-            _path = Path(path)
-            self.command = path if _path.is_file() else None
-        if self.command is None:
-            raise Command.Error(f"Command {path or name} not found on your system.")
-        self.user: str = user
-        self.name: str = name
-
-    def _create_exception(self) -> type:
-        return type(f"{self.name.capitalize()}Error", (Command.Error,), {})
-
-    def _run(self, *args: str, user: str, capture: bool = True, **kwargs) -> str:
-        """Run the command and return stdout."""
-        _args = ["sudo", "-u", user]
-
-        if kwargs.get("env") is not None:
-            _env = ",".join(kwargs["env"].keys())
-            _args.append(f"--preserve-env={_env}")
-
-        _args.append(self.command)  # type: ignore
-        _args.extend(args)
-
-        cp = subprocess.run(
-            _args,
-            capture_output=capture,
-            shell=False,  # noqa: S603
-            check=False,
-            encoding="UTF-8",
-            text=True,
-            **kwargs,
-        )
-        if cp.returncode:
-            raise self._create_exception()(cp.stderr, cp.returncode, _args)
-        return cp.stdout or ""
-
-    def __call__(self, *args: str, user: str | None = None, capture: bool = True, **kwargs) -> str:
-        _user = user or self.user
-        return self._run(*args, user=_user, capture=capture, **kwargs)
 
 
 @unique
@@ -137,6 +45,37 @@ class Backend(StrEnum):
     SFTP = "sftp"
     SCP = "scp"
     FISH = "fish"
+
+
+class VolumeError(Exception):
+    def __init__(self, msg: str) -> None:
+        self.msg = msg
+        super().__init__()
+
+
+class VolumeNotFoundError(VolumeError):
+    def __init__(self, vol: str) -> None:
+        super().__init__(f"{vol} not found on the system")
+
+
+class UnmountedVolumeError(VolumeError):
+    def __init__(self, host: str) -> None:
+        super().__init__(f"volume disk {host} is not mounted")
+
+
+class UnpluggedVolumeError(VolumeError):
+    def __init__(self, disk: str) -> None:
+        super().__init__(f"Volume disk {disk} is not plugged in")
+
+
+class WrongVolumeError(VolumeError):
+    def __init__(self, vol: str) -> None:
+        super().__init__(f"file {vol} should be a mount point")
+
+
+class UnresolvedVoumeError(VolumeError):
+    def __init__(self, vol: str) -> None:
+        super().__init__(f"Unable to resolve {vol} to a valid disk device")
 
 
 @dataclass(slots=True, kw_only=True, unsafe_hash=True)
@@ -149,68 +88,73 @@ class Volume:
     port: int | None = None
     user: str | None = None
     password: str | None = None
-    url: str = field(init=False, compare=False)
 
-    def __post_init__(self):
+    @property
+    def url(self) -> str:
         if self.scheme != Backend.FILE:
             psw = f":{self.password}" if self.password else ""
             user = f"{self.user}{psw}@" if self.user else ""
             port = f":{self.port}" if self.port else ""
+            host = self.host
         else:
             port = user = ""
-            self.verify_file_host()
+            host = self._resolve_file_host()
 
-        self.url = f"{self.scheme}://{user}{self.host}{port}/{self.path}"
+        return f"{self.scheme}://{user}{host}{port}/{self.path}"
 
-    def verify_file_host(self):
+    def url_as_path(self) -> str:
+        return (
+            f"{self._resolve_file_host()}/{self.path}" if self.scheme == Backend.FILE else self.url
+        )
+
+    def _resolve_file_host(self) -> str:
         if "/" in self.host:  # file system path
-            path = Path(self.host).expanduser().absolute()
-            if not path.exists():
-                raise OSError(f"{self.host} should be an available mount point")
-            if not path.is_mount():
-                raise ValueError(f"{self.host} should be a mount point")
-            if path.is_relative_to("/media"):
+            host = Path(self.host).expanduser().absolute()
+            if not host.exists():
+                raise VolumeNotFoundError(self.host)
+            if not host.is_mount():
+                raise WrongVolumeError(self.host)
+            if host.is_relative_to("/media"):
                 warn(
-                    f"{self.host} is defined as an automated mount point. "
+                    f"{self.host} is defined as an automatic mounted point. "
                     "It will not be available with this path in a "
-                    "recovery session (logged as root).",
+                    "recovery session (with a root loging).",
                     stacklevel=1,
                 )
         else:  # disk label or uuid
+            host = self.host
             for test_pth in (Path("/dev/disk/by-label"), Path("/dev/disk/by-uuid")):
-                if (test_pth / self.host).exists():
-                    dev = (test_pth / self.host).resolve()
+                if (test_pth / host).exists():
+                    dev = (test_pth / host).resolve()
+                    host = get_mount_point(dev)
+                    if not host:
+                        # TODO: found but not mounted
+                        # ..so mount it somewhere
+                        raise UnmountedVolumeError(str(self.host))
                     break
             else:
-                raise ValueError(f"Unable to resolve {self.host} to a valid disk device")
-            self.host = self.get_mount_point(dev)
-
-    def get_mount_point(self, device: Path) -> str:
-        df = Command("df", getpass.getuser())  # FIXME: write a Session Class
-        for dev in df("-l", "--output=source,target").split(os.linesep)[1:]:
-            if dev.startswith(str(device)):
-                return dev.split()[1].strip()
-        raise ValueError(f"{device} is not mounted")  # TODO: ..so mount it somewhere
-
-    def url_as_path(self) -> str:
-        return f"{self.host}/{self.path}" if self.scheme == Backend.FILE else self.url
-
-    def is_available(self) -> bool:
-        return os.path.ismount(self.host)
+                raise UnpluggedVolumeError(self.host)
+        if not host:
+            raise UnresolvedVoumeError(host)
+        return str(host)
 
     def info(self) -> str:
-        if self.is_available():
-            stat = shutil.disk_usage(self.host)
-            return (
-                f"volume {self.host} is mounted\n"
-                f"disk usage : {format_bytes(stat.used)}/{format_bytes(stat.total)}, "
-                f"free={format_bytes(stat.free)})\n"
-                "------------------------------------------------------------\n"
-            )
-        return (
-            f"\nBe aware that volume {self.host} is not mounted\n"
-            "------------------------------------------------------------\n"
-        )
+        info = []
+        try:
+            url = self.url
+        except VolumeError as e:
+            info.append(f"Be aware: {e.msg}")
+        else:
+            info.append(f"volume url: {url}")
+
+            if self.scheme == Backend.FILE:
+                stat = shutil.disk_usage(self.url_as_path())
+                info.extend((
+                    f"volume host {self.host} is mounted",
+                    f"disk usage : {format_bytes(stat.used)}/{format_bytes(stat.total)}, free={format_bytes(stat.free)})",
+                ))
+        info.append("------------------------------------------------------------")
+        return "\n".join(info)
 
 
 @dataclass(slots=True, kw_only=True, unsafe_hash=True)
@@ -225,10 +169,10 @@ class Job:
     full_delay: str
     prehook: os.PathLike | None
     keep_last_full: int
-    repository: str = field(init=False, compare=False)
 
-    def __post_init__(self) -> None:
-        self.repository = f"{self.volume.url}/{self.name.upper()}"
+    @property
+    def repository(self) -> str:
+        return f"{self.volume.url}/{self.name.upper()}"
 
     def backup_args(
         self,
@@ -394,17 +338,16 @@ class Config:
 class Batman:
     """Backup Application."""
 
-    def __init__(self) -> None:
-        user: str = self.check_user()
-
-        self.duplicity = Command("duplicity", user)
+    def __init__(self, session: Session) -> None:
+        self.session: Session = session
+        self.duplicity = Command("duplicity", self.session.user)
 
         config = Config()
         if passphrase := config.read("batman/passphrase"):
             os.putenv("PASSPHRASE", passphrase)
 
         self.pool = Pool(config.read("volumes"))
-        self.log(*self.pool.info())
+        self.session.log(*self.pool.info())
 
         self.queue = Queue(self.pool, config.read("jobs"))
 
@@ -415,112 +358,18 @@ class Batman:
         else:
             parser.print_help()
 
-    def check_user(self) -> str:
-        # print(
-        #     f"login: {os.getlogin()}, user: {getpass.getuser()},
-        #               uidd: {os.getuid()}, home: {Path.home()}"
-        # )
-        if os.getlogin() == "root":
-            if os.getuid() != 0:
-                return self.get_username(os.getuid())
-            self.log("You are in a root session (maybe in a system rescue boot mode).")
-            self.fork()
-        elif getpass.getuser() == "root" or os.getuid() == 0:
-            self.log("batman should not be run as root! aborting...")
-            self.exit(1)
-        return os.getlogin()
-
-    @staticmethod
-    def fork():
-        users = Batman.get_real_users()
-        if len(users) > 0:
-            choices = ", ".join([f"as {u}[{i}]" for i, u in enumerate(users)])
-            valid = (str(i) for i in range(len(users)))
-            out = input(f"Choose if you want to login {choices} or aborting[any key]: ")
-            if out in valid:
-                user = users[int(out)]
-                Batman.exit(os.system(f"sudo -u {user} python3 {__file__}"))  # noqa: S605
-            else:
-                Batman.log("Aborting...")
-                Batman.exit(0)
-        else:
-            Batman.log("No valid login user were found on this system, exiting...")
-            Batman.exit(1)
-
-    @staticmethod
-    def get_username(uid: int) -> str:
-        return pwd.getpwuid(uid).pw_name
-
-    @staticmethod
-    def get_real_users() -> list[str]:
-        with Path("/etc/login.defs").open("r") as lgn:
-            if sch := re.search(r"^UID_MIN\s+(\d+)", lgn.read()):
-                min_uid = int(sch[1])
-            else:
-                min_uid = 1000
-
-        return [
-            p.pw_name
-            for p in pwd.getpwall()
-            if (
-                p.pw_uid >= min_uid
-                and p.pw_shell not in ("/usr/sbin/nologin", "/bin/false")
-                and p.pw_dir.startswith("/home")
-            )
-        ]
-
-    @staticmethod
-    def exit(code: int = 0) -> None:
-        sys.exit(code)
-
-    @staticmethod
-    def log(*args: Any) -> None:
-        for st in args:
-            if st:
-                print(st)
-
-    def elapse(self, from_time: float) -> None:
-        t = time.strftime("%H:%M:%S", time.gmtime(time.time() - from_time))
-        self.log(f"Temps écoulé : {t}\n")
-
     def jobs_from_args(self, args: argparse.Namespace) -> list[Job]:
         return list(self.queue) if args.job == "all" else [self.queue.get(args.job)]
 
     def ensure_volume(self, job: Job) -> None:
-        if not job.volume.is_available():
-            self.log(f"Please, attach backup volume {job.volume.host}, exiting...\n")
-            self.exit(1)
-
-    def handle_task(
-        self,
-        task: Command,
-        opts: list[str],
-        desc: str,
-        success: str,
-        err: str,
-        dryrun: bool = False,
-        cleanup: partial[None] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self.log("\n")
-        self.log(desc)
-        if dryrun:
-            self.log("running in dry-run mode")
         try:
-            start = time.time()
-            out = task(*opts, **kwargs)
-        except Command.Error as e:
-            self.log("********************************")
-            self.log(err)
-            self.log(e.msg)
-            if cleanup:
-                cleanup()
-        else:
-            self.log(success)
-            self.log(out)
-            self.elapse(start)
-        finally:
-            pass
+            _ = job.volume.url
+        except UnpluggedVolumeError:
+            self.session.log(f"Please, attach backup volume {job.volume.host}, exiting...\n")
+            self.session.exit(1)
+        except VolumeError as e:
+            self.session.log(e.msg)
+            self.session.exit(1)
 
     def backup(self, args: argparse.Namespace) -> None:
         for job in self.jobs_from_args(args):
@@ -535,7 +384,7 @@ class Batman:
             # if job.prehook:
             #     pass
 
-            self.handle_task(
+            self.session.handle_task(
                 task=self.duplicity,
                 opts=job.backup_args(dryrun=args.dryrun, full=args.full, progress=args.progress),
                 desc=f"Starting <{job.name}> backup: {job.root}",
@@ -548,11 +397,11 @@ class Batman:
 
             if not args.dryrun:
                 self.remove_old(job)
-        self.exit()
+        self.session.exit()
 
     def remove_old(self, job: Job) -> None:
         if job.keep_last_full:
-            self.handle_task(
+            self.session.handle_task(
                 task=self.duplicity,
                 opts=job.remove_old_args(),
                 desc=f"Removing old backup for {job.name.upper()} : {job.root}",
@@ -565,23 +414,25 @@ class Batman:
         # sourcery skip: class-extract-method
         jobs = self.jobs_from_args(args)
         if len(jobs) != 1:
-            self.log("You should specify only one Job for restoring a file.")
-            self.exit(1)
+            self.session.log("You should specify only one Job for restoring a file.")
+            self.session.exit(1)
         job = jobs[0]
 
         file = Path(args.file)
         if file.is_absolute():
-            self.log(f"file argument should be a relative path not '{file}'")
-            self.exit(1)
+            self.session.log(f"file argument should be a relative path not '{file}'")
+            self.session.exit(1)
 
         self.ensure_volume(job)
         abs_file = (Path(job.root) / file).expanduser().absolute()
 
         if abs_file == Path(job.root):
-            self.log(f"You're asking to restore all the backup's contents from job <{job.name}>")
+            self.session.log(
+                f"You're asking to restore all the backup's contents from job <{job.name}>"
+            )
             accept = input("Are you sure you want to do that (y,n)? ")
             if accept not in ("y", "Y"):
-                self.exit()
+                self.session.exit()
         else:
             print(f"You're asking to restore the backup's contents for '{abs_file}'")
             accept = input("Please confirm your request(y,n)? ")
@@ -593,7 +444,7 @@ class Batman:
             restore.mkdir()
         restore = restore / file.name
 
-        self.handle_task(
+        self.session.handle_task(
             task=self.duplicity,
             opts=job.restore_args(file, restore),
             desc=f"trying to restore '{abs_file}' from job <{job.name}>...",
@@ -603,16 +454,16 @@ class Batman:
                 f"look into '{RESTORE_DIR}' folder"
             ),
         )
-        self.exit()
+        self.session.exit()
 
     def cleanup(self, args: argparse.Namespace) -> None:
         for job in self.jobs_from_args(args):
             self._cleanup(job, dryrun=args.dryrun)
-        self.exit()
+        self.session.exit()
 
     def _cleanup(self, job: Job, dryrun: bool):
         self.ensure_volume(job)
-        self.handle_task(
+        self.session.handle_task(
             task=self.duplicity,
             opts=job.cleanup_args(dryrun=dryrun),
             desc=f"Cleaning {job.name.upper()} backup : {job.root}",
@@ -623,45 +474,45 @@ class Batman:
 
     def list_jobs(self, args: argparse.Namespace) -> None:
         for job in self.queue:
-            self.log(job, "\n")
-        self.exit()
+            self.session.log(job, "\n")
+        self.session.exit()
 
     def list_files(self, args: argparse.Namespace) -> None:
         jobs = self.jobs_from_args(args)
         if len(jobs) != 1:
-            self.log("You should specify only one Job for listing files in a backup.")
-            self.exit(1)
+            self.session.log("You should specify only one Job for listing files in a backup.")
+            self.session.exit(1)
         job = jobs[0]
 
         self.ensure_volume(job)
-        self.handle_task(
+        self.session.handle_task(
             task=self.duplicity,
             opts=job.list_files_args(),
             desc=f"List current files for {job.name.upper()} : \nroot : {job.root}",
             err="",
             success="",
         )
-        self.exit()
+        self.session.exit()
 
     def verify(self, args: argparse.Namespace) -> None:
-        self.log("verify command is not yet implemented.")
-        self.exit(1)
+        self.session.log("verify command is not yet implemented.")
+        self.session.exit(1)
 
     def status(self, args: argparse.Namespace) -> None:
         for job in self.jobs_from_args(args):
-            self.handle_task(
+            self.session.handle_task(
                 task=self.duplicity,
                 opts=job.status_arsg(),
                 desc=f"Collection status for {job.name.upper()} : \nroot : {job.root}",
                 err="",
                 success="",
             )
-        self.exit()
+        self.session.exit()
 
     def _duplicity(self, args: argparse.Namespace) -> None:
         print("Calling duplicity with args:", args.args)
         self.duplicity(*args.args, capture=False)
-        self.exit()
+        self.session.exit()
 
     def parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
@@ -780,4 +631,4 @@ class Batman:
 
 
 if __name__ == "__main__":
-    Batman()
+    Batman(session=Session(main=__file__, as_root=False))
