@@ -206,8 +206,14 @@ class Job:
         opts.extend((str(self.root), self.repository))
         return opts
 
-    def cleanup_args(self, dryrun: bool = False) -> list[str]:
-        opts = ["cleanup"]
+    def cleanup_args(self, archive: str | None, dryrun: bool = False) -> list[str]:
+        opts = [
+            "cleanup",
+            f"--name={self.name}",
+            f"--tempdir={TMP}",
+        ]
+        if archive:
+            opts.append(f"--archive-dir={archive}")
         if not dryrun:
             opts.append("--force")
         opts.append(self.repository)
@@ -482,7 +488,10 @@ class Batman:
         self.ensure_volume(job)
         self.session.handle_task(
             task=self.duplicity,
-            opts=job.cleanup_args(dryrun=dryrun),
+            opts=job.cleanup_args(
+                dryrun=dryrun,
+                archive=self.duplicity_archive_dir,
+            ),
             desc=f"Cleaning {job.name.upper()} backup : {job.root}",
             err=f"Cleaning <{job.name}> backup failed for {job.root}",
             success=f"<{job.name}> cleaned successfully for {job.root}",
