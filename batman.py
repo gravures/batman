@@ -2,18 +2,18 @@
 # Copyright (c) 2024 - Gilles Coissac
 # This file is part of Batman program.
 #
-# Lyndows is free software: you can redistribute it and/or modify
+# Batman is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published
 # by the Free Software Foundation, either version 3 of the License,
 # or (at your option) any later version.
 #
-# Lyndows is distributed in the hope that it will be useful,
+# Batman is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty
 # of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with Lyndows. If not, see <https://www.gnu.org/licenses/>
+# along with Batman. If not, see <https://www.gnu.org/licenses/>
 from __future__ import annotations
 
 import argparse
@@ -72,7 +72,7 @@ class WrongVolumeError(VolumeError):
         super().__init__(f"file {vol} should be a mount point")
 
 
-class UnresolvedVoumeError(VolumeError):
+class UnresolvedVolumeError(VolumeError):
     def __init__(self, vol: str) -> None:
         super().__init__(f"Unable to resolve {vol} to a valid disk device")
 
@@ -117,7 +117,7 @@ class Volume:
                 warn(
                     f"{self.host} is defined as an automatic mounted point. "
                     "It will not be available with this path in a "
-                    "recovery session (with a root loging).",
+                    "recovery session (with a root logging).",
                     stacklevel=1,
                 )
         else:  # disk label or uuid
@@ -134,7 +134,7 @@ class Volume:
             else:
                 raise UnpluggedVolumeError(self.host)
         if not host:
-            raise UnresolvedVoumeError(host)
+            raise UnresolvedVolumeError(host)
         return str(host)
 
     def info(self) -> str:
@@ -403,7 +403,7 @@ class Batman:
                 ),
                 desc=f"Starting <{job.name}> backup: {job.root}",
                 err=f"<{job.name}> backup failed for {job.root}",
-                success=f"<{job.name}> backup sucessfull for {job.root}",
+                success=f"<{job.name}> backup successful for {job.root}",
                 dryrun=args.dryrun,
                 cleanup=partial(self._cleanup, job, args.dryrun),
                 capture=False,
@@ -420,7 +420,7 @@ class Batman:
                 task=self.duplicity,
                 opts=job.remove_old_args(),
                 desc=f"Removing old backup for {job.name.upper()} : {job.root}",
-                success=f"Sucessfully removed old backup <{job.name}> for {job.root}",
+                success=f"Successfully removed old backup <{job.name}> for {job.root}",
                 err=f"Removing old backup <{job.name}> failed for {job.root}",
                 dryrun=False,
                 env=self.duplicity_env,
@@ -466,7 +466,7 @@ class Batman:
             desc=f"trying to restore '{abs_file}' from job <{job.name}>...",
             err=f"<{job.name}> file(s) restoration failed for {abs_file}",
             success=(
-                f"<{job.name}> file(s) '{abs_file}' restoration sucessfull, "
+                f"<{job.name}> file(s) '{abs_file}' restoration successful, "
                 f"look into '{RESTORE_DIR}' folder"
             ),
             env=self.duplicity_env,
@@ -485,7 +485,7 @@ class Batman:
             opts=job.cleanup_args(dryrun=dryrun),
             desc=f"Cleaning {job.name.upper()} backup : {job.root}",
             err=f"Cleaning <{job.name}> backup failed for {job.root}",
-            success=f"<{job.name}> cleaned sucessfully for {job.root}",
+            success=f"<{job.name}> cleaned successfully for {job.root}",
             dryrun=dryrun,
             env=self.duplicity_env,
         )
@@ -538,7 +538,7 @@ class Batman:
     def parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
             prog="batman",
-            description="Personnal backup utility using duplicity",
+            description="Personal backup utility using duplicity",
         )
 
         jobs_parser = argparse.ArgumentParser(add_help=False)
