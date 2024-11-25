@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from enum import StrEnum, unique
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from warnings import warn
 
 import tomli
@@ -138,7 +138,7 @@ class Volume:
         return str(host)
 
     def info(self) -> str:
-        info = []
+        info: list[str] = []
         try:
             url = self.url
         except VolumeError as e:
@@ -169,7 +169,7 @@ class Job:
     exclude: tuple[str, ...]
     exclude_ofs: bool
     full_delay: str
-    prehook: os.PathLike | None
+    prehook: os.PathLike[str] | None
     keep_last_full: int
 
     @property
@@ -246,7 +246,7 @@ class Job:
     def __str__(self) -> str:
         r = f"Job definition for <{self.name}>: \nroot: {self.root}"
         if self.exclude:
-            r += "\nexclude files : [%s]" % (", ".join(self.exclude))
+            r += f'\nexclude files : [{", ".join(self.exclude)}]'
         if self.prehook:
             r += "\njob with prehook"
         if self.keep_last_full:
@@ -313,7 +313,7 @@ class Queue:
             f"<{name}> is not a valid job name, registered jobs: {[j.name for j in self.jobs]}"
         )
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Job]:
         yield from self.jobs
 
     def __len__(self) -> int:
