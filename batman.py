@@ -14,26 +14,31 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with Batman. If not, see <https://www.gnu.org/licenses/>
+# ruff: noqa: D100, D101, D102, S108
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
 import sys
+import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum, unique
 from functools import partial
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, final, override
 from warnings import warn
-
-import tomli
 
 from session import Session
 from system import Command, format_bytes, get_mount_point
 
 
-TMP = "/var/tmp"  # noqa: S108
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+TMP = os.environ.get("TMP", os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp")))
 RESTORE_DIR = "RESTORED"
 
 
@@ -170,7 +175,13 @@ class Job:
     exclude_ofs: bool
     full_delay: str
     prehook: os.PathLike[str] | None
+    posthook: os.PathLike[str] | None
     keep_last_full: int
+    encryption: bool
+    compression: bool
+    blocksize: int
+    concurrency: int
+    copylink: bool
 
     @property
     def repository(self) -> str:
@@ -179,14 +190,15 @@ class Job:
     def backup_args(
         self,
         archive: str | None,
+        tmpdir: str,
         dryrun: bool = False,
         full: bool = False,
-        progress: bool = False,
+        progress: bool = True,
     ) -> list[str]:
         opts = [
             "full" if full else "incremental",
             f"--name={self.name}",
-            f"--tempdir={TMP}",
+            f"--tempdir={tmpdir}",
             f"--log-file={self.volume.url_as_path()}/duplicity-{self.name.upper()}.log",
         ]
 
@@ -198,19 +210,30 @@ class Job:
             opts.append("--exclude-other-filesystems")
         if self.full_delay:
             opts.append(f"--full-if-older-than={self.full_delay}")
+        if not self.encryption:
+            opts.append("--no-encryption")
+        if not self.compression:
+            opts.append("--no-compression")
+        if self.copylink:
+            opts.append("--copy-links")
         if dryrun:
             opts.append("--dry-run")
         if progress:
             opts.append("--progress")
 
-        opts.extend((str(self.root), self.repository))
+        opts.extend((
+            f"--copy-blocksize={self.blocksize}",
+            f"--concurrency={self.concurrency}",
+            str(self.root),
+            self.repository,
+        ))
         return opts
 
-    def cleanup_args(self, archive: str | None, dryrun: bool = False) -> list[str]:
+    def cleanup_args(self, archive: str | None, tmpdir: str, dryrun: bool = False) -> list[str]:
         opts = [
             "cleanup",
             f"--name={self.name}",
-            f"--tempdir={TMP}",
+            f"--tempdir={tmpdir}",
         ]
         if archive:
             opts.append(f"--archive-dir={archive}")
@@ -235,12 +258,14 @@ class Job:
     def list_files_args(self) -> list[str]:
         return ["duplicity", "list-current-files", self.repository]
 
-    def restore_args(self, file: Path, restore: Path, archive: str | None) -> list[str]:
+    def restore_args(
+        self, file: Path, restore: Path, archive: str | None, tmpdir: str
+    ) -> list[str]:
         archive = f"--archive-dir={archive}" if archive else ""
         return [
             archive,
             f"--name={self.name}",
-            f"--tempdir={TMP}",
+            f"--tempdir={tmpdir}",
             f"--log-file={self.volume.url_as_path()}/duplicity-{self.name.upper()}.log",
             "--no-restore-ownership",
             f"--path-to-restore={file}",
@@ -249,30 +274,35 @@ class Job:
             str(restore),
         ]
 
+    @override
     def __str__(self) -> str:
         r = f"Job definition for <{self.name}>: \nroot: {self.root}"
         if self.exclude:
-            r += f'\nexclude files : [{", ".join(self.exclude)}]'
+            r += f"\nexclude files : [{', '.join(self.exclude)}]"
         if self.prehook:
-            r += "\njob with prehook"
+            r += f"\njob with prehook <{self.prehook}>"
+        if self.posthook:
+            r += f"\njob with posthook <{self.posthook}>"
         if self.keep_last_full:
-            r += "\nremove old backup > %i" % self.keep_last_full
+            r += f"\nremove old backup > {self.keep_last_full}"
         return r
 
 
+@final
 class Pool:
     """A container for Volumes."""
 
     __slots__ = ("volumes",)
 
-    def __init__(self, mapping: dict[str, Any]) -> None:
+    def __init__(self, mapping: dict[str, Mapping[str, str]]) -> None:
         self.volumes: dict[str, Volume] = {}
         for name, vol_def in mapping.items():
+            port = vol_def.get("port")
             self.volumes[name] = Volume(
-                scheme=vol_def["scheme"],
+                scheme=Backend(vol_def["scheme"]),
                 host=vol_def["host"],
                 path=vol_def["path"],
-                port=vol_def.get("port"),
+                port=int(port) if port else None,
                 user=vol_def.get("user"),
                 password=vol_def.get("password"),
             )
@@ -285,12 +315,13 @@ class Pool:
         return self.volumes[name]
 
 
+@final
 class Queue:
     """A container for Jobs."""
 
     __slots__ = ("jobs", "pool")
 
-    def __init__(self, pool: Pool, mapping: dict[str, Any] | None = None) -> None:
+    def __init__(self, pool: Pool, mapping: Mapping[str, Mapping[str, Any]] | None = None) -> None:
         self.jobs: set[Job] = set()
         self.pool = pool
         if mapping:
@@ -304,7 +335,13 @@ class Queue:
                         exclude_ofs=job_def.get("exclude_ofs", False),
                         full_delay=job_def.get("full_delay", ""),
                         keep_last_full=job_def.get("keep_last_full", 0),
-                        prehook=None,
+                        prehook=job_def.get("prehook", None),
+                        posthook=job_def.get("posthook", None),
+                        encryption=job_def.get("encryption", True),
+                        compression=job_def.get("compression", True),
+                        blocksize=job_def.get("blocksize", 128),
+                        concurrency=job_def.get("concurrency", 0),
+                        copylink=job_def.get("copylink", False),
                     )
                 )
 
@@ -315,9 +352,8 @@ class Queue:
         for job in self.jobs:
             if job.name == name:
                 return job
-        raise LookupError(
-            f"<{name}> is not a valid job name, registered jobs: {[j.name for j in self.jobs]}"
-        )
+        msg = f"<{name}> is not a valid job name, registered jobs: {[j.name for j in self.jobs]}"
+        raise LookupError(msg)
 
     def __iter__(self) -> Iterator[Job]:
         yield from self.jobs
@@ -332,7 +368,7 @@ class Config:
         self.mapping: dict[str, Any] = {}
         with path.open(mode="r") as stream:
             try:
-                self.mapping = tomli.loads(stream.read())
+                self.mapping = tomllib.loads(stream.read())
             except Exception:
                 print(f"Loading {path} failed!")
 
@@ -357,6 +393,8 @@ class Batman:
 
         config = Config()
         self.duplicity_archive_dir: str | None = config.read("batman/archive")
+        self.duplicity_tmpdir: str = config.read("batman/tempdir") or TMP
+        self.duplicity_restore_dir: str = config.read("batman/restoredir") or RESTORE_DIR
 
         if env := config.read("batman/env"):
             self.duplicity_env |= env
@@ -380,7 +418,7 @@ class Batman:
         try:
             _ = job.volume.url
         except UnpluggedVolumeError:
-            self.session.log(f"Please, attach backup volume {job.volume.host}, exiting...\n")
+            self.session.log(f"Please, attach backup volume {job.volume.host}, aborting...\n")
             self.session.exit(1)
         except VolumeError as e:
             self.session.log(e.msg)
@@ -391,18 +429,34 @@ class Batman:
             self.ensure_volume(job)
 
             # FIXME: does not work anymore
-            # repo = Path(job.repository)
-            # if not repo.is_dir():
-            #     repo.mkdir()
+            repo = Path.from_uri(job.repository)
+            if not repo.is_dir():
+                repo.mkdir()
 
-            # TODO: call prehook
-            # if job.prehook:
-            #     pass
+            if job.prehook:
+                try:
+                    prehook = Command(str(job.prehook), self.session.user)
+                except Command.Error:
+                    self.session.log(f"could not resolve job prehook <{job.prehook}>, aborting...")
+                    self.session.exit(1)
+                else:
+                    self.session.handle_task(
+                        task=prehook,
+                        opts=[],
+                        desc=f"executing prehook <{prehook.name}>",
+                        success="prehook successfully executed.",
+                        err="aborting backup since prehook failed.",
+                        cleanup=partial(self.session.exit, 1),
+                        dryrun=args.dryrun,
+                        capture=False,
+                        env=self.duplicity_env,
+                    )
 
             self.session.handle_task(
                 task=self.duplicity,
                 opts=job.backup_args(
                     dryrun=args.dryrun,
+                    tmpdir=self.duplicity_tmpdir,
                     full=args.full,
                     progress=args.progress,
                     archive=self.duplicity_archive_dir,
@@ -461,19 +515,21 @@ class Batman:
             if accept not in ("y", "Y"):
                 sys.exit()
 
-        restore = Path(job.root).expanduser().absolute() / RESTORE_DIR
+        restore = Path(job.root).expanduser().absolute() / self.duplicity_restore_dir
         if not restore.is_dir():
             restore.mkdir()
         restore = restore / file.name
 
         self.session.handle_task(
             task=self.duplicity,
-            opts=job.restore_args(file, restore, archive=self.duplicity_archive_dir),
+            opts=job.restore_args(
+                file, restore, archive=self.duplicity_archive_dir, tmpdir=self.duplicity_tmpdir
+            ),
             desc=f"trying to restore '{abs_file}' from job <{job.name}>...",
             err=f"<{job.name}> file(s) restoration failed for {abs_file}",
             success=(
                 f"<{job.name}> file(s) '{abs_file}' restoration successful, "
-                f"look into '{RESTORE_DIR}' folder"
+                f"look into '{self.duplicity_restore_dir}' folder"
             ),
             env=self.duplicity_env,
         )
@@ -491,6 +547,7 @@ class Batman:
             opts=job.cleanup_args(
                 dryrun=dryrun,
                 archive=self.duplicity_archive_dir,
+                tmpdir=self.duplicity_tmpdir,
             ),
             desc=f"Cleaning {job.name.upper()} backup : {job.root}",
             err=f"Cleaning <{job.name}> backup failed for {job.root}",
@@ -547,7 +604,7 @@ class Batman:
     def parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
             prog="batman",
-            description="Personal backup utility using duplicity",
+            description="Backup utility using duplicity",
         )
 
         jobs_parser = argparse.ArgumentParser(add_help=False)
@@ -596,11 +653,11 @@ class Batman:
             help="perform a full backup, even if the full delay for a job is not reach",
         )
         backup.add_argument(
-            "-p",
-            "--progress",
+            "-n",
+            "--no-progress",
             dest="progress",
-            action="store_true",
-            help="print a backup progress when possible",
+            action="store_false",
+            help="don't show backup progress",
         )
         backup.set_defaults(func=self.backup)
 
