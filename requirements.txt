@@ -1,7 +1,4 @@
-chardet<3.10
-cryptography==3.4.8
-requests
-urllib3<1.26
-fasteners
-duplicity
-tomli
+fasteners>=0.19
+python-gettext>=5.0
+setuptools>=78.1.0
+duplicity>=3.0

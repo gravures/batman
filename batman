@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
 
-cd $(dirname $(realpath $0))
-micromamba run -p ./.env python batman.py $@
+function scriptdir() {
+  local dir
+  local source
+
+  source="${BASH_SOURCE[1]}"
+
+  while [ -L "$source" ]; do
+    dir=$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)
+    source=$(readlink "$source")
+    [[ $source != /* ]] && source=$dir/$source
+  done
+  (cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)
+}
+
+cd "$(scriptdir)" || exit 1
+
+source ./bootstrap.sh && bootstrap
+if [[ ! -d ./.mamba/conda/envs/batman ]]; then
+  advertise you should bootstrap batman before running it
+  exit 1
+fi
+micromamba -p $MAMBA_ROOT/envs/batman run --label batman python batman.py "$@"

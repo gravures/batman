@@ -1,77 +1,71 @@
 # RUFF configuration file
 # see: https://docs.astral.sh/ruff/settings
 #      https://docs.astral.sh/ruff/rules
-line-length  = 99
+line-length = 99
 indent-width = 4
-src          = ["."]
-exclude      = ['docs/conf.py']
-builtins     = ["_i"]
-task-tags    = ["TODO", "FIXME", "BUG", "HACK", "XXX", "[ ]", "[*]"]
+src = ["."]
+exclude = ['docs/conf.py', 'typings', '.*']
+builtins = ["_i"]
+task-tags = ["TODO", "FIXME", "BUG", "HACK", "XXX", "[ ]", "[*]"]
 # Disable fix for unused imports (`F401`)
 unfixable = ["F401"]
 
+
 [lint]
-select = [
-  'A',  # flake8-builtins
-  'B',  # flake8-bugbear
-  'C4', # flake8-comprehensions
-  'C9', # mccabe
-  'D',  # pydocstyle
-  'E',  # pycodestyle
-  'F',  # pyflakes
-  'W',  # pycodestyle
-  'N',  # pep8-naming
-  'UP', # pyupgrade
-  # 'ANN',   # flake8-annotations
-  'ASYNC', # flake8-asyncpg
-  'S',     # flake8-bandit
-  'FBT',   # flake8-bolean-trap
-  'COM',   # flake8-commas
-  'CPY',   # flake8-copyright
-  'PYI',   # flake8-pyi
-  'RSE',   # flake8-raise
-  'RET',   # flake8-return
-  'TCH',   # flake8-todo
-  'PTH',   # flake8-use-pathlib 
-  'PL',    # pylint
-  'TRY',   # tryceratops
-  'RUF',   # ruff
-]
+preview = true
+task-tags = ["TODO", "FIXME", "BUG", "HACK", "XXX", "[ ]", "[*]"]
+unfixable = ["F401"] # Disable fix for unused imports (`F401`)
+select = ['ALL']
 ignore = [
+  'ANN',     # flake8-annotations
+  'PD',      # panda-vet
   'COM812',  # missing trailing comma
   'COM819',  # prohibited-trailing-comma
-  'D100',    # undocumented-public-module
-  'D101',    # undocumented-public-class
-  'D102',    # undocumented-public-method
-  'D103',    # undocumented-public-function
-  'D104',    # undocumented-public-package
   'D105',    # undocumented-magic-method
   'D106',    # undocumented-public-nested-class
   'D107',    # undocumented-public-init
-  'D401',    # non-imperative-mood
   'TRY003',  # raise-vanilla-args
+  'FBT003',
   'FBT002',  # boolean-default-value-positional-argument
-  'S101',    # assert
-  'FBT001',
-  'PLR0913',
+  'FBT001',  # Boolean-typed positional argument in function definition
+  'PLR0913', # Too many arguments in function definition ({c_args} > {max_args})
+  'ERA001',  # commented code
+  'S404',    # subprocess is evil
+  'TD001',   # todo format
+  'TD002',   # todo format
+  'TD003',   # todo format
+  'PT013',   # Found incorrect import of pytest
+  'SLF001',  # Private member accessed
+  'PLC2701', # import-private-name
+  'PLW3201', # Bad or misspelled dunder method name
+]
+
+[lint.per-file-ignores]
+"tests/**.py" = [
+  "T20",    # Allow print statements in tests
+  "D",      # Ignore docstring rules in tests
+  "ANN",    # Ignore type annotations in tests
+  "S101",   # Yeah of course we assert in tests
+  "B009",   # Allow calling `getattr` in tests since it can be used to make the test clearer.
+  "CPY001", # missing copyright
 ]
 
 [lint.isort]
 lines-after-imports = 2
-required-imports    = ["from __future__ import annotations"]
+required-imports = ["from __future__ import annotations"]
 
 [lint.pydocstyle]
-convention          = "google"
-ignore-decorators   = ["typing.overload"]
+convention = "google"
+ignore-decorators = ["typing.overload"]
 property-decorators = ["gi.repository.GObject.Property"]
 
 [lint.pylint]
 allow-magic-value-types = ["int", "str"]
 
 [format]
-preview                   = true
-quote-style               = "double"
-indent-style              = "space"
+preview = true
+quote-style = "double"
+indent-style = "space"
 skip-magic-trailing-comma = false
 
 [mccabe]

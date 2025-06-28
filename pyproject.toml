@@ -1,18 +1,26 @@
 [project]
 name = "batman"
+description = "Simple command line backup utility wrapping duplicity programm."
+authors = [{ name = "Gilles Coissac", email = "gilles@ideographe.fr" }]
+license = { text = "GPL-3.0" }
+readme = "README.md"
+version = "1.0.0"
+keywords = []
+requires-python = ">=3.13"
 dependencies = [
-  "chardet<3.10",
-  "cryptography==3.4.8",
-  "requests",
-  "urllib3<1.26",
-  "fasteners",
-  "duplicity",
-  "tomli",
+  "fasteners>=0.19",
+  "python-gettext>=5.0",
+  "setuptools>=78.1.0",
+
+  # "chardet<3.10",
+  # "cryptography==3.4.8",
+  # "requests",
+  # "urllib3",
+  "duplicity>=3.0",
 ]
 
 [project.optional-dependencies]
 backends = [
-  "atom",
   "azure-storage-blob",
   "b2sdk",
   "boto3",
@@ -34,18 +42,24 @@ backends = [
   "pydrive2",
   "pyrax",
   "python-swiftclient",
-  "python-keystoneclient",
+  "requests",
   "requests-oauthlib",
 ]
 
 [tool.conda-lock]
 default-non-conda-source = "pip"
-skip-non-conda-lock      = true
-channels                 = ['conda-forge']
-platforms                = ['linux-64']
+skip-non-conda-lock = true
+channels = ['conda-forge']
+platforms = ['linux-64']
 
 [tool.conda-lock.dependencies]
-python   = "3.11"
-pip      = ">=24"
-librsync = ">=2.3"
-gnupg    = ">=2.4.5"
+python = "3.13"
+rsync = ">=3.4"
+librsync = ""
+rclone = ""
+openssl = ""
+lftp = ""
+libffi = ""
+gnupg = ">=2.4.5"
+tzdata = ""
+uv = ""

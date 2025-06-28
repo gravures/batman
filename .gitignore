@@ -128,6 +128,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.mamba/
 
 # Spyder project settings
 .spyderproject
